@@ -1,9 +1,5 @@
-#import matplotlib
-#matplotlib.use('Agg')
 import sys
-sys.setrecursionlimit(10000)
 import argparse
-
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
@@ -15,8 +11,7 @@ import multiprocessing
 import logging
 from sklearn.cross_validation import StratifiedKFold
 from sklearn.grid_search import GridSearchCV
-from sklearn.metrics import f1_score, confusion_matrix
-
+from sklearn.metrics import f1_score, confusion_matrix, roc_auc_score
 from sklearn.feature_selection import SelectKBest, f_regression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -25,11 +20,12 @@ from sklearn.ensemble import VotingClassifier
 from sklearn.externals import joblib
 from mlp import MLP
 import time
-
 import os
 import pandas as pd
 import matplotlib.pyplot as plt
 import pickle as p
+
+sys.setrecursionlimit(10000)
 
 logging.basicConfig(format="[%(module)s:%(levelname)s]:%(message)s")
 logger = logging.getLogger(__name__)
@@ -71,7 +67,8 @@ class Poly:
 
     def __init__(self, data, label, n_folds=10,
                  scale=True, verbose=10, exclude=[],
-                 feature_selection=False, save=True):
+                 feature_selection=False, save=True,
+                 scoring='f1'):
 
         logger.info('Building classifiers ...')
         self.classifiers = {
@@ -128,7 +125,8 @@ class Poly:
         self._test_index = []
         self.predictions = None
         self.save = save
-        
+        self.scoring = scoring
+
         zeros = np.zeros((self.n_class, self.n_class))
         for key in self.classifiers:
                 self.scores[key] = {'train': [], 'test': []}
@@ -156,6 +154,7 @@ class Poly:
             else:
                 logger.info('Running {}'.format(key))
                 if val['parameters']:
+                    logger.info('Grid search on')
                     if key == 'Multilayer Perceptron':
                         njobs = 1
                     else:
@@ -163,6 +162,7 @@ class Poly:
                     clf = GridSearchCV(val['clf'], val['parameters'],
                                        n_jobs=njobs, cv=3, iid=False)
                 else:
+                    logger.info('No grid search')
                     clf = val['clf']
 
                 clf.fit(X, y)
@@ -172,9 +172,13 @@ class Poly:
             duration = time.time()-start
 
             ypred = clf.predict(X)
-            score = f1_score(y, ypred, average=average)
+            if self.scoring == 'f1':
+                score = f1_score(y, ypred, average=average)
+            elif self.scoring == 'auc':
+                score = roc_auc_score(y, ypred)
+            else:
+                logger.Error('{} scoring not defined'.format(self.scoring))
             self.scores[key]['train'].append(score)
-            
             self.fitted_clfs[key] = clf
             logger.info('{0:25}:  Train {1:.2f}, {2:.2f} sec'.format(
                 key, score, duration))
@@ -185,7 +189,12 @@ class Poly:
             clf = make_voter(self.fitted_clfs, y, 'hard')
             self.fitted_clfs['Voting'] = clf
             ypred = clf.predict(X)
-            score = f1_score(y, ypred, average=average)
+            if self.scoring == 'f1':
+                score = f1_score(y, ypred, average=average)
+            elif self.scoring == 'auc':
+                score = roc_auc_score(y, ypred)
+            else:
+                logger.Error('{} scoring not defined'.format(self.scoring))
             self.scores['Voting']['train'].append(score)
             logger.info('{0:25} : Train {1:.2f}'.format('Voting', score))
 
@@ -198,11 +207,16 @@ class Poly:
         for key, val in self.fitted_clfs.items():
             ypred = val.predict(X)
             # Scores
-            score = f1_score(y, ypred, average=average)
+            if self.scoring == 'f1':
+                score = f1_score(y, ypred, average=average)
+            elif self.scoring == 'auc':
+                score = roc_auc_score(y, ypred)
+            else:
+                logger.Error('{} scoring not defined'.format(self.scoring))
             self.scores[key]['test'].append(score)
             # Confusion matrix
             confusion = confusion_matrix(y, ypred)
-            self.confusions[key]+=confusion
+            self.confusions[key] += confusion
             # Predictions
             self._predictions[key].extend(
                 self._le.inverse_transform(ypred))
